@@ -88,6 +88,7 @@ protected:
    TInterpreter    *fInterpreter;         //Command interpreter
    Bool_t          fBatch;                //True if session without graphics
    Bool_t          fEditHistograms;       //True if histograms can be edited with the mouse
+   Bool_t          fCommaDecimalSeparator;
    Bool_t          fFromPopUp;            //True if command executed from a popup menu
    Bool_t          fMustClean;            //True if object destructor scans canvases
    Bool_t          fReadingObject;        //True while reading an object [Deprecated (will be removed in next release)
@@ -165,6 +166,7 @@ public:
    const char       *GetCutClassName() const { return fCutClassName; }
    const char       *GetDefCanvasName() const { return fDefCanvasName; }
    Bool_t            GetEditHistograms() const { return fEditHistograms; }
+   Bool_t            GetCommaDecimalSeparator() const { return fCommaDecimalSeparator; }
    Int_t             GetEditorMode() const { return fEditorMode; }
    Bool_t            GetForceStyle() const { return fForceStyle; }
    Int_t             GetBuiltDate() const { return fBuiltDate; }
@@ -251,6 +253,7 @@ public:
    void              SetCutClassName(const char *name = "TCutG");
    void              SetDefCanvasName(const char *name = "c1") { fDefCanvasName = name; }
    void              SetEditHistograms(Bool_t flag = kTRUE) { fEditHistograms = flag; }
+   void              SetCommaDecimalSeparator( Bool_t flag = kFALSE) { fCommaDecimalSeparator = flag; }
    void              SetEditorMode(const char *mode = "");
    void              SetExecutingMacro(Bool_t flag = kTRUE) { fExecutingMacro = flag; }
    void              SetFromPopUp(Bool_t flag = kTRUE) { fFromPopUp = flag; }
