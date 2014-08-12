@@ -1528,6 +1528,12 @@ L110:
                   }
                }
 
+               if (gROOT->GetCommaDecimalSeparator()) {
+                    char* ptr = strchr(label, '.');
+                    if (ptr != NULL) {
+                        *ptr = ',';
+                    }
+               }
 //*-*-              Generate the time labels
 
                if (optionTime) {
