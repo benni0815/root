@@ -187,6 +187,7 @@ public:
    
    virtual Double_t Chisquare(TF1 * f1, Option_t *option = "") const;
    virtual Double_t ComputeIntegral(Bool_t onlyPositive = false);
+   TObject*         Clone(const char* newname=0) const;
    virtual void     Copy(TObject &hnew) const;
    virtual void     DirectoryAutoAdd(TDirectory *);
    virtual Int_t    DistancetoPrimitive(Int_t px, Int_t py);
@@ -223,6 +224,7 @@ public:
    const   Double_t *GetBuffer() const {return fBuffer;}
    static  Int_t    GetDefaultBufferSize();
    virtual Double_t *GetIntegral();
+   TH1             *GetCumulative(Bool_t forward = kTRUE, const char* suffix = "_cumulative") const;
 
    TList           *GetListOfFunctions() const { return fFunctions; }
 

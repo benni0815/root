@@ -19,11 +19,18 @@
 
 extern "C" int G__xrefflag;
 
-#if __cplusplus >= 201103L
-#define THREAD_LOCAL thread_local
+#if __GNUC__ <= 4 && __GNUC_MINOR__ < 80
+#define THREAD_LOCAL_OR_STATIC static
+
 #else
-#define THREAD_LOCAL
+#if __cplusplus >= 201103L
+#define THREAD_LOCAL_OR_STATIC thread_local
+#else
+#define THREAD_LOCAL_OR_STATIC static
 #endif
+
+#endif
+
 
 /*********************************************************************
 * class G__MethodInfo
@@ -169,7 +176,7 @@ struct G__ifunc_table* Cint::G__MethodInfo::ifunc()
 ///////////////////////////////////////////////////////////////////////////
 const char* Cint::G__MethodInfo::Title() 
 {
-  THREAD_LOCAL static char buf[G__INFO_TITLELEN];
+   THREAD_LOCAL_OR_STATIC char buf[G__INFO_TITLELEN];
   buf[0]='\0';
   if(IsValid()) {
     struct G__ifunc_table_internal *ifunc2;
@@ -600,7 +607,7 @@ int Cint::G__MethodInfo::IsBusy()
 ///////////////////////////////////////////////////////////////////////////
 char* Cint::G__MethodInfo::GetPrototype()
 {
-  THREAD_LOCAL static G__FastAllocString *buf_ptr = new G__FastAllocString(G__LONGLINE);
+  THREAD_LOCAL_OR_STATIC G__FastAllocString *buf_ptr = new G__FastAllocString(G__LONGLINE);
   G__FastAllocString &buf(*buf_ptr);  // valid until the next call of GetPrototype, just like any static
 
   if (!IsValid()) return 0;

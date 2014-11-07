@@ -1192,7 +1192,7 @@ TClass::TClass(const TClass& cl) :
   fContextMenuTitle(cl.fContextMenuTitle),
   fTypeInfo(cl.fTypeInfo),
   fShowMembers(cl.fShowMembers),
-  fInterShowMembers(cl.fInterShowMembers),
+  fInterShowMembers(0),
   fStreamer(cl.fStreamer),
   fSharedLibs(cl.fSharedLibs),
   fIsA(cl.fIsA),
@@ -1209,7 +1209,7 @@ TClass::TClass(const TClass& cl) :
   fStreamerFunc(cl.fStreamerFunc),
   fSizeof(cl.fSizeof),
   fCanSplit(cl.fCanSplit),
-  fProperty(cl.fProperty),
+  fProperty(0),
   fVersionUsed(),
   fIsOffsetStreamerSet(cl.fIsOffsetStreamerSet),
   fOffsetStreamer(cl.fOffsetStreamer),
@@ -1317,7 +1317,11 @@ TClass::~TClass()
 
    fIsOffsetStreamerSet=kFALSE;
 
+#if __cplusplus >= 201103L
+   if (fInterShowMembers) gCint->CallFunc_Delete(fInterShowMembers.load());
+#else
    if (fInterShowMembers) gCint->CallFunc_Delete(fInterShowMembers);
+#endif
 
    if ( fIsA ) delete fIsA;
 
@@ -1890,20 +1894,24 @@ Bool_t TClass::CallShowMembers(void* obj, TMemberInspector &insp,
          //
 
          if (!fInterShowMembers) {
-            CallFunc_t* ism = gCint->CallFunc_Factory();
-            Long_t offset = 0;
-            
-            R__LOCKGUARD2(gCINTMutex);
-            gCint->CallFunc_SetFuncProto(ism,fClassInfo,"ShowMembers", "TMemberInspector&", &offset);
-            if (fIsOffsetStreamerSet && offset != fOffsetStreamer) {
-               Error("CallShowMembers", "Logic Error: offset for Streamer() and ShowMembers() differ!");
-               fInterShowMembers = 0;
-               return kFALSE;
-            }
 
-            fInterShowMembers = ism;
+            R__LOCKGUARD2(gCINTMutex);
+            if(!fInterShowMembers) {
+               CallFunc_t* ism = gCint->CallFunc_Factory();
+               Long_t offset = 0;
+
+               gCint->CallFunc_SetFuncProto(ism,fClassInfo,"ShowMembers", "TMemberInspector&", &offset);
+               if (fIsOffsetStreamerSet && offset != fOffsetStreamer) {
+                  Error("CallShowMembers", "Logic Error: offset for Streamer() and ShowMembers() differ!");
+                  fInterShowMembers = 0;
+                  return kFALSE;
+               }
+
+               fInterShowMembers = ism;
+            }
          }
-         if (!gCint->CallFunc_IsValid(fInterShowMembers)) {
+         void* interShowMembers = fInterShowMembers;
+         if (!gCint->CallFunc_IsValid(interShowMembers)) {
             if (strcmp(GetName(), "string") == 0) {
                // For std::string we know that we do not have a ShowMembers
                // function and that it's okay.
@@ -1914,10 +1922,10 @@ Bool_t TClass::CallShowMembers(void* obj, TMemberInspector &insp,
             return kFALSE;
          } else {
             R__LOCKGUARD2(gCINTMutex);
-            gCint->CallFunc_ResetArg(fInterShowMembers);
-            gCint->CallFunc_SetArg(fInterShowMembers,(Long_t) &insp);
+            gCint->CallFunc_ResetArg(interShowMembers);
+            gCint->CallFunc_SetArg(interShowMembers,(Long_t) &insp);
             void* address = (void*) (((Long_t) obj) + fOffsetStreamer);
-            gCint->CallFunc_Exec((CallFunc_t*)fInterShowMembers,address);
+            gCint->CallFunc_Exec((CallFunc_t*)interShowMembers,address);
             return kTRUE;
          }
       } else if (TVirtualStreamerInfo* sinfo = GetStreamerInfo()) {
@@ -3670,23 +3678,8 @@ TVirtualStreamerInfo* TClass::GetStreamerInfo(Int_t version /* = 0 */) const
 
    TVirtualStreamerInfo *guess = fLastReadInfo;
    if (guess && guess->GetClassVersion() == version) {
-      // NOTE: race condition on IsCompiled() ... either TestBit or fBits becomes
-      // atomic or we make sure that the following code is no longer necessary
-      // by making sure that the StreamerInfo assigned to fLastReadInfo is
-      // already compiled (see FindStreamerInfo for example of possible break of
-      // this contract).
-
-      // If it was assigned to fLastReadInfo, it was already used
-      // and thus already properly setup
-      if (!guess->IsCompiled()) {
-         // Streamer info has not been compiled, but exists.
-         // Therefore it was read in from a file and we have to do schema evolution?
-         // Or it didn't have a dictionary before, but does now?
-         R__LOCKGUARD(gCINTMutex);
-         // Re-test to make sure we did not get the 'wrong' result early because
-         // of the potential data races on fBits.
-         if (!guess->IsCompiled()) guess->BuildOld();
-      }
+      // If the StreamerInfo is assigned to the fLastReadInfo, we are
+      // guaranted it was built and compiled.
       return guess;
    }
 
@@ -3739,12 +3732,6 @@ TVirtualStreamerInfo* TClass::GetStreamerInfo(Int_t version /* = 0 */) const
          // If we do not have a StreamerInfo for this version and we do not
          // have dictionary information nor a proxy, there is nothing to build!
          //
-         // Warning:  Whether or not the build optimizes is controlled externally
-         //           to us by a global variable!  Don't call us unless you have
-         //           set that variable properly with TStreamer::Optimize()!
-         //
-         // FIXME: Why don't we call BuildOld() like we do below?  
-         // Answer: We are new and so don't have to do schema evolution.
          sinfo->Build();
       }
    } else {
@@ -3759,7 +3746,8 @@ TVirtualStreamerInfo* TClass::GetStreamerInfo(Int_t version /* = 0 */) const
    if (version == fClassVersion) {
       fCurrentInfo = sinfo;
    }
-   fLastReadInfo = sinfo;
+   // If the compilation succeeded, remember this StreamerInfo.
+   if (sinfo->IsCompiled()) fLastReadInfo = sinfo;
    return sinfo;
 }
 
@@ -3904,6 +3892,11 @@ void TClass::IgnoreTObjectStreamer(Bool_t ignr)
    //     BigTrack::Class()->IgnoreTObjectStreamer();
    //  To be effective for object streamed member-wise or split in a TTree,
    //  this function must be called for the most derived class (i.e. BigTrack).
+
+   // We need to tak the lock since we are test and then setting fBits
+   // and TStreamerInfo::fBits (and the StreamerInfo state in general)
+   // which can also be modified by another thread.
+   R__LOCKGUARD2(gCINTMutex);
 
    if ( ignr &&  TestBit(kIgnoreTObjectStreamer)) return;
    if (!ignr && !TestBit(kIgnoreTObjectStreamer)) return;
@@ -4100,6 +4093,8 @@ void *TClass::New(ENewType defConstructor) const
       // Register the object for special handling in the destructor.
       if (p) {
          RegisterAddressInRepository("New",p,this);
+      } else {
+         Error("New", "Failed to construct class '%s' using streamer info", GetName());
       }
    } else {
       Error("New", "This cannot happen!");
@@ -4904,8 +4899,6 @@ Long_t TClass::Property() const
 
    if (fClassInfo) {
 
-      kl->fProperty = gCint->ClassInfo_Property(fClassInfo);
-
       if (!gCint->ClassInfo_HasMethod(fClassInfo,"Streamer") ||
           !gCint->ClassInfo_IsValidMethod(fClassInfo,"Streamer","TBuffer&",&dummy) ) {
 
@@ -4933,6 +4926,9 @@ Long_t TClass::Property() const
          kl->fStreamerType  = kExternal;
          kl->fStreamerImpl  = &TClass::StreamerExternal;
       }
+      //must set this last since other threads may read fProperty
+      // and think all test bits have been properly set
+      kl->fProperty = gCint->ClassInfo_Property(fClassInfo);
 
    } else {
 
@@ -5624,7 +5620,8 @@ TVirtualStreamerInfo *TClass::FindStreamerInfo(UInt_t checksum) const
          TVirtualStreamerInfo *info = (TVirtualStreamerInfo*)fStreamerInfo->UncheckedAt(i);
          if (info && info->GetCheckSum() == checksum) {
             // R__ASSERT(i==info->GetClassVersion() || (i==-1&&info->GetClassVersion()==1));
-            fLastReadInfo = info;
+            info->BuildOld();
+            if (info->IsCompiled()) fLastReadInfo = info;
             return info;
          }
       }

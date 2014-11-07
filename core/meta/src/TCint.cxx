@@ -2098,8 +2098,9 @@ void *TCint::FindSpecialObject(const char *item, G__ClassInfo *type,
    // This function tries to find the UO in the ROOT files, directories, etc.
    // This functions has been registered by the TCint ctor.
 
-   if (!*prevObj || *assocPtr != gDirectory) {
+   //must protect calls to fgSetOfSpecials and call to G__ClassInfo::Init
    R__LOCKGUARD(gCINTMutex);
+   if (!*prevObj || *assocPtr != gDirectory) {
       *prevObj = gROOT->FindSpecialObject(item, *assocPtr);
       if (!fgSetOfSpecials) fgSetOfSpecials = new std::set<TObject*>;
       if (*prevObj) ((std::set<TObject*>*)fgSetOfSpecials)->insert((TObject*)*prevObj);
@@ -2426,10 +2427,10 @@ const char *TCint::GetIncludePath()
 const char *TCint::GetSTLIncludePath() const
 {
    // Return the directory containing CINT's stl cintdlls.
-#if __cplusplus >= 201103L
-   thread_local static TString stldir;
+#if defined(R__HAS_THREAD_LOCAL)
+   thread_local TString stldir;
 #else
-   static TString stldir;
+   TString &stldir( TTHREAD_TLS_INIT<5 /* must be unique */, TString>() );
 #endif
    if (!stldir.Length()) {
 #ifdef CINTINCDIR

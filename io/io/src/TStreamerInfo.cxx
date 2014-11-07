@@ -205,15 +205,19 @@ TStreamerInfo::~TStreamerInfo()
 //______________________________________________________________________________
 namespace {
    // Makes sure kBuildOldUsed set once Build or BuildOld finishes
-   struct TPreventBuildOldGuard {
-      TPreventBuildOldGuard(TStreamerInfo* info): fInfo(info) {
+   // Makes sure kBuildRunning reset once Build finishes
+   struct TPreventRecursiveBuildGuard {
+      TPreventRecursiveBuildGuard(TStreamerInfo* info): fInfo(info) {
+         fInfo->SetBit(TStreamerInfo::kBuildRunning);
          fInfo->SetBit(TStreamerInfo::kBuildOldUsed);
       }
-      TPreventBuildOldGuard() {
+      ~TPreventRecursiveBuildGuard() {
          fInfo->ResetBit(TStreamerInfo::kBuildOldUsed);
+         fInfo->ResetBit(TStreamerInfo::kBuildRunning);
       }
       TStreamerInfo* fInfo;
    };
+
 }
 
 //______________________________________________________________________________
@@ -223,15 +227,22 @@ void TStreamerInfo::Build()
    // A list of TStreamerElement derived classes is built by scanning
    // one by one the list of data members of the analyzed class.
 
-   R__LOCKGUARD(gCINTMutex);
    // Did another thread already do the work?
+   if (fIsCompiled) return;
+
+   R__LOCKGUARD(gCINTMutex);
+
+   // Did another thread already do the work while we were waiting ..
+   if (fIsCompiled) return;
+
+   // Has Build already been run?
    if (fIsBuilt) return;
 
-   // This is used to avoid unwanted recursive call to Build
-   fIsBuilt = kTRUE;
+   // Are we recursing on ourself?
+   if (TestBit(TStreamerInfo::kBuildRunning)) return;
 
-   // This is used to avoid unwanted recursive call to BuildOld.
-   TPreventBuildOldGuard buildOldGuard(this);
+   // This is used to avoid unwanted recursive call to Build or BuildOld.
+   TPreventRecursiveBuildGuard buildGuard(this);
 
    if (fClass->GetCollectionProxy()) {
       TVirtualCollectionProxy *proxy = fClass->GetCollectionProxy();
@@ -244,6 +255,7 @@ void TStreamerInfo::Build()
       TStreamerElement* element = new TStreamerSTL("This", title.Data(), 0, fClass->GetName(), *proxy, 0);
       fElements->Add(element);
       Compile();
+      fIsBuilt = kTRUE;
       return;
    }
 
@@ -566,6 +578,7 @@ void TStreamerInfo::Build()
    // Make a more compact version.
    //
    Compile();
+   fIsBuilt = kTRUE;
 }
 
 //______________________________________________________________________________
@@ -1091,13 +1104,9 @@ void TStreamerInfo::BuildEmulated(TFile *file)
    fClassVersion = -1;
    fCheckSum = 2001;
    TObjArray *elements = GetElements();
-   if (!elements) return;
-   Int_t ndata = elements->GetEntries();
-   if (ndata == 0) return;
-   TStreamerElement *element;
-   Int_t i;
-   for (i=0;i < ndata;i++) {
-      element = (TStreamerElement*)elements->UncheckedAt(i);
+   Int_t ndata = elements ? elements->GetEntries() : 0;
+   for (Int_t i=0;i < ndata;i++) {
+      TStreamerElement *element = (TStreamerElement*)elements->UncheckedAt(i);
       if (!element) break;
       int ty = element->GetType();
       if (ty < kChar || ty >kULong+kOffsetL)    continue;
@@ -1491,8 +1500,11 @@ namespace {
 
    // Makes sure kBuildOldUsed set once BuildOld finishes
    struct TBuildOldGuard {
-      TBuildOldGuard(TStreamerInfo* info): fInfo(info) {}
+      TBuildOldGuard(TStreamerInfo* info): fInfo(info) {
+         fInfo->SetBit(TStreamerInfo::kBuildRunning);
+      }
       ~TBuildOldGuard() {
+         fInfo->ResetBit(TStreamerInfo::kBuildRunning);
          fInfo->SetBit(TStreamerInfo::kBuildOldUsed);
       }
       TStreamerInfo* fInfo;
@@ -1505,7 +1517,14 @@ void TStreamerInfo::BuildOld()
    // rebuild the TStreamerInfo structure
 
    R__LOCKGUARD(gCINTMutex);
+
    if ( TestBit(kBuildOldUsed) ) return;
+
+   // Are we recursing on ourself?
+   if (TestBit(TStreamerInfo::kBuildRunning)) return;
+
+   // This is used to avoid unwanted recursive call to Build and make sure
+   // that we record the execution of BuildOld.
    TBuildOldGuard buildOldGuard(this);
 
    if (gDebug > 0) {
@@ -1514,11 +1533,15 @@ void TStreamerInfo::BuildOld()
 
    Bool_t wasCompiled = IsCompiled();
 
-   // This is used to avoid unwanted recursive call to Build
-   fIsBuilt = kTRUE;
-
    if (fClass->GetClassVersion() == fClassVersion) {
-      fClass->BuildRealData();
+      if (!fClass->GetClassInfo() || TClassEdit::IsSTLCont(GetName(), 0) || TClassEdit::IsSTLBitset(GetName()))
+      {
+         // Handle emulated classes and STL containers specially.
+         // in this case BuildRealData would call BuildOld for this same
+         // TStreamerInfo to be able to build the real data on it.
+      } else {
+         fClass->BuildRealData();
+      }
    }
    else {
       // This is to support the following case
@@ -2311,6 +2334,8 @@ void TStreamerInfo::Clear(Option_t *option)
    opt.ToLower();
 
    if (opt.Contains("build")) {
+      R__LOCKGUARD2(gCINTMutex);
+
       delete [] fComp;     fComp    = 0;
       delete [] fCompFull; fCompFull= 0;
       delete [] fCompOpt;  fCompOpt = 0;
@@ -2318,7 +2343,7 @@ void TStreamerInfo::Clear(Option_t *option)
       fNfulldata = 0;
       fNslots= 0;
       fSize = 0;
-      ResetBit(kIsCompiled);
+      ResetIsCompiled();
       ResetBit(kBuildOldUsed);
 
       if (fReadObjectWise) fReadObjectWise->fActions.clear();
@@ -4738,6 +4763,7 @@ void TStreamerInfo::Streamer(TBuffer &R__b)
          R__b.SetBufferOffset(R__s+R__c+sizeof(UInt_t));
          ResetBit(kIsCompiled);
          ResetBit(kBuildOldUsed);
+         ResetBit(kBuildRunning);
          return;
       }
       //====process old versions before automatic schema evolution
